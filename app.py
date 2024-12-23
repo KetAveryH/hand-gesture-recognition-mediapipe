@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import csv
+import pyautogui
+import threading
 import copy
 import argparse
 import itertools
@@ -15,13 +17,21 @@ from utils import CvFpsCalc
 from model import KeyPointClassifier
 from model import PointHistoryClassifier
 
+# FOR WINDOWS TODO: Add if windows
+import ctypes
+
+def move_cursor(x, y):
+    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+
 
 def get_args():
     parser = argparse.ArgumentParser()
+    
+    screen_width, screen_height = pyautogui.size()
 
     parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--width", help='cap width', type=int, default=960)
-    parser.add_argument("--height", help='cap height', type=int, default=540)
+    parser.add_argument("--width", help='cap width', type=int, default=screen_width)
+    parser.add_argument("--height", help='cap height', type=int, default=screen_height)
 
     parser.add_argument('--use_static_image_mode', action='store_true')
     parser.add_argument("--min_detection_confidence",
@@ -36,6 +46,8 @@ def get_args():
     args = parser.parse_args()
 
     return args
+
+
 
 
 def main():
@@ -61,7 +73,7 @@ def main():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         static_image_mode=use_static_image_mode,
-        max_num_hands=1,
+        max_num_hands=4,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
     )
@@ -92,6 +104,9 @@ def main():
     history_length = 16
     point_history = deque(maxlen=history_length)
 
+    # Hand gesture history 
+    hand_gesture_history = deque([[-1,-1]]*history_length, maxlen=history_length) #deque([left_gesture, right_gesture], ...)
+    drawn_circles = []  # Store drawn circles
     # Finger gesture history ################################################
     finger_gesture_history = deque(maxlen=history_length)
 
@@ -125,6 +140,8 @@ def main():
         if results.multi_hand_landmarks is not None:
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
                                                   results.multi_handedness):
+                hand_side = handedness.classification[0].label # returns: "Left" or "Right"
+                
                 # Bounding box calculation
                 brect = calc_bounding_rect(debug_image, hand_landmarks)
                 # Landmark calculation
@@ -141,6 +158,14 @@ def main():
 
                 # Hand sign classification
                 hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
+                
+                #
+                if hand_side == "Left":
+                    hand_gesture_history.append([hand_sign_id, None])
+                else:
+                    hand_gesture_history.append([None, hand_sign_id])
+                    
+                    
                 if hand_sign_id == 2:  # Point gesture
                     point_history.append(landmark_list[8])
                 else:
@@ -157,6 +182,15 @@ def main():
                 finger_gesture_history.append(finger_gesture_id)
                 most_common_fg_id = Counter(
                     finger_gesture_history).most_common()
+                
+                # Gesture control
+                if hand_side == "Right" and hand_sign_id == 2: # Right hand is pointing  # TODO: Program so it adapts for lefties and righties
+                    pointer_x, pointer_y = landmark_list[8]
+                    move_cursor(pointer_x, pointer_y)
+                    if hand_gesture_history[-2][0] == 1: # previous frame of left hand is closed
+                        # Draw circle permanently here
+                        drawn_circles.append((pointer_x, pointer_y))
+                        
 
                 # Drawing part
                 debug_image = draw_bounding_rect(use_brect, debug_image, brect)
@@ -168,11 +202,22 @@ def main():
                     keypoint_classifier_labels[hand_sign_id],
                     point_history_classifier_labels[most_common_fg_id[0][0]],
                 )
+                debug_image = draw_drawing(debug_image, drawn_circles)
+    
+                
+
+                
+                        
+                        
         else:
             point_history.append([0, 0])
 
         debug_image = draw_point_history(debug_image, point_history)
         debug_image = draw_info(debug_image, fps, mode, number)
+        debug_image = draw_drawing(debug_image, drawn_circles)
+       
+        
+        
 
         # Screen reflection #############################################################
         cv.imshow('Hand Gesture Recognition', debug_image)
@@ -293,6 +338,11 @@ def logging_csv(number, mode, landmark_list, point_history_list):
             writer.writerow([number, *point_history_list])
     return
 
+def draw_drawing(image, drawn_circles):
+    if len(drawn_circles) > 0 :
+        for circle in drawn_circles:
+            cv.circle(image, (int(circle[0]), int(circle[1])), 5, (0, 255, 0), -1)
+    return image
 
 def draw_landmarks(image, landmark_point):
     if len(landmark_point) > 0:
