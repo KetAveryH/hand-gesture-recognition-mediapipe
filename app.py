@@ -20,24 +20,62 @@ from model import PointHistoryClassifier
 # FOR WINDOWS TODO: Add if windows
 import ctypes
 
-def move_cursor(x, y):
+import pdb
+
+MOUSEEVENTF_LEFTDOWN = 0x0002  # Left button down
+MOUSEEVENTF_LEFTUP = 0x0004    # Left button up
+
+def clamp(value, min_value, max_value):
+    return max(min_value, min(value, max_value))
+
+def move_cursor(x: int, y: int, cap_width: int , cap_height: int, screen_width: int, screen_height: int, scaling_x: float, scaling_y):
+    x_ratio, y_ratio = (screen_width/(cap_width)), (screen_height/(cap_height)) # x * x_ratio = screen_x_pos
+    
+    
+    # Create Play Area box in center of video of dimension: cap_dimensions / scaling_sensitivity
+    x_margin, y_margin = (cap_width/scaling_x) / 2, (cap_height/scaling_y) / 2  # Calculate total margin area, divide by 2
+    x_min, y_min = x_margin, y_margin
+    x_max, y_max = cap_width - x_margin, cap_height - y_margin 
+    
+    # Shift Play Area box towards the right by the margin
+    x = x-x_margin
+    y = y-y_margin
+    
+    # Clamp values to exist within the desktop borders
+    # x = clamp(x, x_min, x_max)
+    # y = clamp(y, y_min, y_max)
+    
+    x = (x * x_ratio) * scaling_x # Map x video pos to screen pos, multiply by scaling sensitivity 
+    y = (y * y_ratio) * scaling_y  # Map y video to to screen pos. multiply by scaling sensitivity
+    
+    # Move Cursor
     ctypes.windll.user32.SetCursorPos(int(x), int(y))
+
+def click_and_hold():
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)  # Simulate left button press
+
+def release_click():
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)    # Simulate left button release
+
+def click():
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)  # Simulate left button press
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)    # Simulate left button release
 
 
 def get_args():
     parser = argparse.ArgumentParser()
     
-    screen_width, screen_height = pyautogui.size()
+    
 
-    parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--width", help='cap width', type=int, default=screen_width)
-    parser.add_argument("--height", help='cap height', type=int, default=screen_height)
+    parser.add_argument("--device", type=int, default=1)
+    parser.add_argument("--width", help='cap width', type=int, default=960)
+    parser.add_argument("--height", help='cap height', type=int, default=540)
 
     parser.add_argument('--use_static_image_mode', action='store_true')
     parser.add_argument("--min_detection_confidence",
                         help='min_detection_confidence',
                         type=float,
-                        default=0.7)
+                        default=0.8)
     parser.add_argument("--min_tracking_confidence",
                         help='min_tracking_confidence',
                         type=int,
@@ -54,6 +92,7 @@ def main():
     # Argument parsing #################################################################
     args = get_args()
 
+    screen_width, screen_height = pyautogui.size()
     cap_device = args.device
     cap_width = args.width
     cap_height = args.height
@@ -65,15 +104,18 @@ def main():
     use_brect = True
 
     # Camera preparation ###############################################################
-    cap = cv.VideoCapture(cap_device)
+    # pdb.set_trace()
+    cap = cv.VideoCapture(1, cv.CAP_DSHOW)
     cap.set(cv.CAP_PROP_FRAME_WIDTH, cap_width)
     cap.set(cv.CAP_PROP_FRAME_HEIGHT, cap_height)
+    cap.set(cv.CAP_PROP_FPS, 60)
+
 
     # Model load #############################################################
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         static_image_mode=use_static_image_mode,
-        max_num_hands=4,
+        max_num_hands=2,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
     )
@@ -136,7 +178,7 @@ def main():
         results = hands.process(image)
         image.flags.writeable = True
 
-        #  ####################################################################
+        ####################################################################
         if results.multi_hand_landmarks is not None:
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
                                                   results.multi_handedness):
@@ -184,12 +226,18 @@ def main():
                     finger_gesture_history).most_common()
                 
                 # Gesture control
+                pointer_x, pointer_y = landmark_list[8]
                 if hand_side == "Right" and hand_sign_id == 2: # Right hand is pointing  # TODO: Program so it adapts for lefties and righties
-                    pointer_x, pointer_y = landmark_list[8]
-                    move_cursor(pointer_x, pointer_y)
+                    
+                    
+                    move_cursor(pointer_x, pointer_y, cap_width, cap_height, screen_width, screen_height, 2, 1.5)
+                    
                     if hand_gesture_history[-2][0] == 1: # previous frame of left hand is closed
                         # Draw circle permanently here
+                        
                         drawn_circles.append((pointer_x, pointer_y))
+                        # Hold the click
+                        click()
                         
 
                 # Drawing part
