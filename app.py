@@ -12,6 +12,12 @@ from collections import deque
 import cv2 as cv
 import numpy as np
 import mediapipe as mp
+import math
+import time
+
+MOUSEEVENTF_LEFTDOWN = 0x0002  # Left button down
+MOUSEEVENTF_LEFTUP   = 0x0004  # Left button up
+MOUSEEVENTF_WHEEL    = 0x0800  # Mouse wheel
 
 from utils import CvFpsCalc
 from model import KeyPointClassifier
@@ -85,8 +91,359 @@ def get_args():
 
     return args
 
+class GestureController():
+    def __init__(self, cache_size):
+        if cache_size < 1:
+            raise ValueError("Cache must be at least of size 1")
+        
+        # For storing landmarks from recent frames.
+        self.hand_history = deque([None] * cache_size, maxlen=cache_size)
+        self.curr_hand_data = None
+        
+        # Simple hand state machines
+        self.hand_state = {"left": "idle", "right": "idle"}
+        self.hand_press_time = {"left": 0.0, "right": 0.0}
 
+        # Pinch / grab thresholds
+        self.pinch_threshold = 0.7
+        self.grab_threshold  = 0.20
+        self.hold_threshold  = 0.2  # seconds
 
+        # Grab-to-scroll
+        self.scroll_sensitivity = 0.8
+        self.last_scroll_y = 0.0
+
+        # For screen mapping
+        import pyautogui
+        self.screen_width, self.screen_height = pyautogui.size()
+        
+        
+        # How do we want to store the history of hand detections?
+        # We can assume we will only receive 2 detections at once
+        # We will be able to get both of these detection "simultaneously" (unlike ultraleap)
+        # We may want to store a series of n previous detections, stored together along with a timestamp
+        # We can decide on a list for now of pairs, we can use a deque (double ended queue) data object to store our "cache"
+     
+    def controller(self, event):
+        """
+        Process the current Mediapipe detection (event.multi_hand_landmarks)
+        and update hand states (pinch vs grab) for left and right hands.
+        Also demonstrates how to move the cursor from the index-finger tip.
+        """
+        # For each detected hand + label (Left/Right)
+        for hand, handedness in zip(event.multi_hand_landmarks,
+                                    event.multi_handedness):
+            self.curr_hand_data = hand
+            hand_type = handedness.classification[0].label  # "Left" or "Right"
+
+            # Calculate pinch and grab strengths
+            pinch = self.pinch_strength(4, 8)  # thumb tip & index tip
+            grab  = self.grab_strength()
+
+            # We'll define the "palm_y" from WRIST index=0
+            # (You can pick a different reference if you prefer)
+            palm_y = hand.landmark[0].y if hand.landmark else 0.0
+
+            if hand_type == "Right":
+                # Move cursor from wrist to avoid instability (landmark 0)
+                if hand.landmark:
+                    pointer_x = hand.landmark[0].x
+                    pointer_y = hand.landmark[0].y
+                    self.move_cursor(pointer_x, pointer_y)
+
+                # Update state machine
+                self.update_right_hand_state(
+                    grab_strength=grab,
+                    pinch_strength=pinch,
+                    palm_y=palm_y
+                )
+            
+            elif hand_type == "Left":
+                # Example: no cursor for left, or something else:
+                self.update_left_hand_state(
+                    grab_strength=grab,
+                    pinch_strength=pinch,
+                    palm_y=palm_y
+                )
+
+            # Keep some kind of history (make this left vs right for the future, and ID based)
+            self.hand_history.append(hand)
+
+    # ---------------------------
+    # Pinch/Grab Strength Helpers
+    # ---------------------------
+    def distance(self, landmark_1, landmark_2):
+        """
+        Euclidean distance between two 3D points (x,y,z).
+        """
+        return math.sqrt(
+            (landmark_1.x - landmark_2.x) ** 2 +
+            (landmark_1.y - landmark_2.y) ** 2 +
+            (landmark_1.z - landmark_2.z) ** 2
+        )
+
+    def pinch_strength(self, idx1=4, idx2=8):
+        """
+        Returns a normalized pinch strength between 0..1
+        (0 = fully open, 1 = fully pinched).
+        Default compares THUMB_TIP=4 and INDEX_TIP=8.
+        """
+        if self.curr_hand_data is None or not self.curr_hand_data.landmark:
+            return 0.0
+
+        # Landmark references
+        lm1 = self.curr_hand_data.landmark[idx1]
+        lm2 = self.curr_hand_data.landmark[idx2]
+        wrist = self.curr_hand_data.landmark[0]  # WRIST
+        mid_mcp = self.curr_hand_data.landmark[9]  # MIDDLE_FINGER_MCP for scaling
+
+        # Distance between pinch landmarks
+        pinch_dist = self.distance(lm1, lm2)
+        # Reference distance
+        ref_dist = self.distance(wrist, mid_mcp)
+        if ref_dist == 0:
+            return 0.0
+        
+        strength = 1.0 - (pinch_dist / ref_dist)
+        return max(0.0, min(1.0, strength))
+
+    def grab_strength(self):
+        """
+        Very rough 'grab' measure. 
+        Averages multiple pinch strengths to see if the fingers are close to the wrist.
+        """
+        if self.curr_hand_data is None or not self.curr_hand_data.landmark:
+            return 0.0
+        
+        # We can just re-use pinch_strength with various pairs:
+        #  - Compare each fingertip to the wrist or to the palm center
+        tips = [4, 8, 12, 16, 20]  # thumb/index/middle/ring/pinky tip
+        values = []
+        for tip_idx in tips:
+            # Compare tip to wrist (0)
+            # We'll do 1 - (distance(tip, wrist)/someRef). Already done in pinch_strength logic, so:
+            # Let's just do pinch_strength(tip, 0) if you like
+            if tip_idx == 4:
+                # we can do a bigger difference for thumb to a bigger reference
+                values.append(self.pinch_strength(4, 9))  # thumb to middle MCP
+            else:
+                # Compare fingertip to wrist
+                values.append(self.pinch_strength(tip_idx, 0))
+
+        # Average
+        if values:
+            return sum(values)/len(values)
+        else:
+            return 0.0
+    
+    # ---------------------------
+    # Right-Hand State Machine
+    # ---------------------------
+    def update_right_hand_state(self, grab_strength, pinch_strength, palm_y):
+        """
+        Right-hand FSM logic:
+        - Pinch => short pinch click, pinch-hold => click & hold
+        - Grab => short grab => do nothing, grab-hold => scroll
+        Priority: pinch if (pinch_strength >= pinch_threshold && pinch > grab);
+                  else if (grab_strength >= grab_threshold) => grab
+                  else idle
+        """
+        current_time = time.time()
+        current_state = self.hand_state["right"]
+
+        pinch_active = (pinch_strength >= self.pinch_threshold)
+        grab_active  = (grab_strength >= self.grab_threshold)
+
+        # Priority check
+        if pinch_active and pinch_strength > grab_strength:
+            gesture = "pinch"
+        elif grab_active:
+            gesture = "grab"
+        else:
+            gesture = None
+
+        # State transitions
+        if current_state == "idle":
+            if gesture == "pinch":
+                self.hand_state["right"] = "pinch-pressing"
+                self.hand_press_time["right"] = current_time
+                # Immediately we can do a press_down, or wait. 
+                # self.press_down()
+                
+            elif gesture == "grab":
+                self.hand_state["right"] = "grab-pressing"
+                self.hand_press_time["right"] = current_time
+                self.last_scroll_y = palm_y
+                print("Right hand: Grab start. Will scroll if you hold long enough.")
+
+        elif current_state == "pinch-pressing":
+            if gesture == "pinch":
+                # Still pinching => check for hold threshold
+                if (current_time - self.hand_press_time["right"]) >= self.hold_threshold:
+                    self.hand_state["right"] = "pinch-holding"
+                    print("Right hand: pinch-hold started.")
+                    self.press_down()
+            else:
+                # If pinch ended before hold threshold => short pinch => click
+                elapsed = current_time - self.hand_press_time["right"]
+                if elapsed < self.hold_threshold:
+                    print("Right hand: short pinch => single click.")
+                    self.trigger_click_event()
+                self.hand_state["right"] = "idle"
+
+        elif current_state == "pinch-holding":
+            if gesture == "pinch":
+                # Keep holding
+                pass
+            else:
+                # pinch ended => release
+                print("Right hand: pinch-hold ended.")
+                self.press_up()
+                self.hand_state["right"] = "idle"
+
+        elif current_state == "grab-pressing":
+            if gesture == "grab":
+                # check for hold threshold => start scrolling
+                if (current_time - self.hand_press_time["right"]) >= self.hold_threshold:
+                    self.hand_state["right"] = "grab-holding"
+                    self.last_scroll_y = palm_y
+                    print("Right hand: grab-hold => begin scrolling mode.")
+            else:
+                # short grab => do nothing
+                print("Right hand: short grab => no action.")
+                self.hand_state["right"] = "idle"
+
+        elif current_state == "grab-holding":
+            if gesture == "grab":
+                # keep scrolling
+                self.scroll_with_displacement(palm_y)
+            else:
+                # done
+                print("Right hand: grab scroll ended.")
+                self.hand_state["right"] = "idle"
+
+    # ---------------------------
+    # Left-Hand State Machine
+    # ---------------------------
+    def update_left_hand_state(self, grab_strength, pinch_strength, palm_y):
+        """
+        Example left-hand FSM. 
+        You can adapt the logic for drawing, clearing, or anything else you want.
+        Currently, it parallels the right-hand approach.
+        """
+        current_time = time.time()
+        current_state = self.hand_state["left"]
+
+        pinch_active = (pinch_strength >= self.pinch_threshold)
+        grab_active  = (grab_strength >= self.grab_threshold)
+
+        if pinch_active and pinch_strength > grab_strength:
+            gesture = "pinch"
+        elif grab_active:
+            gesture = "grab"
+        else:
+            gesture = None
+
+        # For demonstration, let's just do a simpler pinch click, or
+        # you can replicate exactly the same logic as right-hand:
+        if current_state == "idle":
+            if gesture == "pinch":
+                self.hand_state["left"] = "pinch-pressing"
+                self.hand_press_time["left"] = current_time
+                # e.g., you might do self.press_down() or start drawing
+                print("Left hand pinch start.")
+
+            elif gesture == "grab":
+                self.hand_state["left"] = "grab-pressing"
+                self.hand_press_time["left"] = current_time
+                print("Left hand grab start - can do something else...")
+
+        elif current_state == "pinch-pressing":
+            if gesture == "pinch":
+                # Still pinching => check for hold threshold
+                if (current_time - self.hand_press_time["left"]) >= self.hold_threshold:
+                    self.hand_state["left"] = "pinch-holding"
+                    print("Left hand pinch-hold started.")
+            else:
+                # short pinch => single click
+                elapsed = current_time - self.hand_press_time["left"]
+                if elapsed < self.hold_threshold:
+                    print("Left hand short pinch => single click.")
+                    self.trigger_click_event()
+                self.hand_state["left"] = "idle"
+
+        elif current_state == "pinch-holding":
+            if gesture == "pinch":
+                # keep pinch-holding
+                pass
+            else:
+                # pinch ended => release
+                print("Left hand pinch-hold ended.")
+                self.hand_state["left"] = "idle"
+
+        elif current_state == "grab-pressing":
+            if gesture == "grab":
+                if (current_time - self.hand_press_time["left"]) >= self.hold_threshold:
+                    self.hand_state["left"] = "grab-holding"
+                    print("Left hand grab-hold => do something (scroll, draw, etc).")
+            else:
+                print("Left hand short grab => no action.")
+                self.hand_state["left"] = "idle"
+
+        elif current_state == "grab-holding":
+            if gesture == "grab":
+                # If you want left-hand to scroll, you can do:
+                self.scroll_with_displacement(palm_y)
+            else:
+                print("Left hand grab ended.")
+                self.hand_state["left"] = "idle"
+
+    # ---------------------------
+    # Scrolling + Mouse Helpers
+    # ---------------------------
+    def scroll_with_displacement(self, current_y):
+        """
+        Compare current_y with last_scroll_y, 
+        send mouse wheel event for difference.
+        Positive => scroll up, negative => scroll down (by default).
+        """
+        delta = current_y - self.last_scroll_y
+        scroll_amount = int( delta * self.scroll_sensitivity * 5000)
+
+        if scroll_amount != 0:
+            ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
+        
+        self.last_scroll_y = current_y
+
+    def move_cursor(self, x, y):
+        """
+        Convert normalized [0..1] x,y from Mediapipe 
+        to actual screen coordinates and move the OS cursor.
+        """
+        # Might need to invert y since Mediapipe y=0 top, 
+        # and Windows y=0 top. Usually flipping is not needed if you want direct movement, 
+        # but you can invert if you like:
+        screen_x = int(x * self.screen_width)
+        screen_y = int(y * self.screen_height)
+
+        # Clamp if needed
+        screen_x = max(0, min(self.screen_width - 1, screen_x))
+        screen_y = max(0, min(self.screen_height - 1, screen_y))
+
+        ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
+
+    def trigger_click_event(self):
+        self.press_down()
+        self.press_up()
+
+    def press_down(self):
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+
+    def press_up(self):
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    
+    
+                
 
 def main():
     # Argument parsing #################################################################
@@ -154,6 +511,9 @@ def main():
 
     #  ########################################################################
     mode = 0
+    
+    # GestureController
+    gesture_controller = GestureController(cache_size=10)
 
     while True:
         fps = cvFpsCalc.get()
@@ -175,13 +535,18 @@ def main():
         image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
 
         image.flags.writeable = False
-        results = hands.process(image)
+        event = hands.process(image)
         image.flags.writeable = True
 
         ####################################################################
-        if results.multi_hand_landmarks is not None:
-            for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
-                                                  results.multi_handedness):
+        if event.multi_hand_landmarks is not None:
+            # Gesture Controller
+                # Will take in all current landmark detections and process them
+            
+            gesture_controller.controller(event)
+            
+            for hand_landmarks, handedness in zip(event.multi_hand_landmarks,
+                                                  event.multi_handedness):
                 hand_side = handedness.classification[0].label # returns: "Left" or "Right"
                 
                 # Bounding box calculation
@@ -200,6 +565,8 @@ def main():
 
                 # Hand sign classification
                 hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
+                
+                
                 
                 #
                 if hand_side == "Left":
