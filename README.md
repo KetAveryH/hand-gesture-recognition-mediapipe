@@ -1,9 +1,8 @@
 # hand-gesture-recognition-using-mediapipe (Modified for Custom Application)
 
 This project is a modified version of the original [hand-gesture-recognition-using-mediapipe](https://github.com/Kazuhito00/hand-gesture-recognition-using-mediapipe).  
-The code has been repurposed to create a new application with API endpoints, omitting the original machine learning models.
+The code has been repurposed to create a new application with API endpoints, omitting the original machine learning models. These may be included at a later date if deemed necessary.
 
-![hand-gesture-demo](https://user-images.githubusercontent.com/37477845/102222442-c452cd00-3f26-11eb-93ec-c387c98231be.gif)
 
 This repository now includes:
 - **Demo application:**  
