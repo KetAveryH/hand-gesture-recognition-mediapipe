@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Hand Tracking</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            text-align: center;
+            font-family: Arial, sans-serif;
+        }
+        
+        .ball {
+            width: 20px;
+            height: 20px;
+            background-color: red;
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            transition: transform 0.05s linear; /* Smooth movement */
+        }
+    </style>
+</head>
+<body>
+    <h1>Live Hand Tracking</h1>
+    <div>
+        <h2>Left Hand Position:</h2>
+        <p>X: <span id="left_x_pos">Waiting...</span></p>
+        <p>Y: <span id="left_y_pos">Waiting...</span></p>
+        <p>Z: <span id="left_z_pos">Waiting...</span></p>
+        <p>Gesture: <span id="left_gesture">Waiting...</span></p>
+        <p>Timestamp: <span id="left_timestamp">Waiting...</span></p>
+    </div>
+    <div>
+        <h2>Right Hand Position:</h2>
+        <p>X: <span id="right_x_pos">Waiting...</span></p>
+        <p>Y: <span id="right_y_pos">Waiting...</span></p>
+        <p>Z: <span id="right_z_pos">Waiting...</span></p>
+        <p>Gesture: <span id="right_gesture">Waiting...</span></p>
+        <p>Timestamp: <span id="right_timestamp">Waiting...</span></p>
+    </div>
+
+    <div id="left_ball" class="ball" style="background-color: blue;"></div>
+    <div id="right_ball" class="ball" style="background-color: red;"></div>
+
+    <script>
+        var socket = io("http://localhost:5000");
+        var leftBall = document.getElementById("left_ball");
+        var rightBall = document.getElementById("right_ball");
+
+        socket.on("hand_update", function(data) {
+            // Extract left hand position
+            let leftHand = data.left_hand.position || { x: null, y: null, z: null };
+            let leftGesture = data.left_hand.gesture;
+            let leftTimestamp = data.left_hand.timestamp;
+
+            // Extract right hand position
+            let rightHand = data.right_hand.position || { x: null, y: null, z: null };
+            let rightGesture = data.right_hand.gesture;
+            let rightTimestamp = data.right_hand.timestamp;
+
+            // Update text values for left hand
+            document.getElementById("left_x_pos").innerText = leftHand.x !== null ? leftHand.x.toFixed(2) : "None";
+            document.getElementById("left_y_pos").innerText = leftHand.y !== null ? leftHand.y.toFixed(2) : "None";
+            document.getElementById("left_z_pos").innerText = leftHand.z !== null ? leftHand.z.toFixed(2) : "None";
+            document.getElementById("left_gesture").innerText = leftGesture;
+            document.getElementById("left_timestamp").innerText = (leftTimestamp / 1000000000).toFixed(4);
+
+            // Update text values for right hand
+            document.getElementById("right_x_pos").innerText = rightHand.x !== null ? rightHand.x.toFixed(2) : "None";
+            document.getElementById("right_y_pos").innerText = rightHand.y !== null ? rightHand.y.toFixed(2) : "None";
+            document.getElementById("right_z_pos").innerText = rightHand.z !== null ? rightHand.z.toFixed(2) : "None";
+            document.getElementById("right_gesture").innerText = rightGesture;
+            document.getElementById("right_timestamp").innerText = (rightTimestamp / 1000000000).toFixed(4);
+
+            // Normalize X and Y values to screen size
+            let screenWidth = window.innerWidth;
+            let screenHeight = window.innerHeight;
+
+            if (leftHand.x !== null && leftHand.y !== null) {
+                let leftX = leftHand.x * screenWidth; 
+                let leftY = leftHand.y * screenHeight; 
+
+                // Move the left ball to the exact screen position
+                leftBall.style.left = `${leftX}px`;
+                leftBall.style.top = `${leftY}px`;
+                leftBall.style.transform = `translate(-50%, -50%)`; // Keep the ball centered
+                leftBall.style.display = "block";
+            } else {
+                leftBall.style.display = "none";
+            }
+
+            if (rightHand.x !== null && rightHand.y !== null) {
+                let rightX = rightHand.x * screenWidth;
+                let rightY = rightHand.y * screenHeight;
+
+                // Move the right ball to the exact screen position
+                rightBall.style.left = `${rightX}px`;
+                rightBall.style.top = `${rightY}px`;
+                rightBall.style.transform = `translate(-50%, -50%)`;
+                rightBall.style.display = "block";
+            } else {
+                rightBall.style.display = "none";
+            }
+
+        });
+
+        socket.on("connect", function() {
+            console.log("Connected to WebSocket server");
+        });
+
+        socket.on("disconnect", function() {
+            console.log("Disconnected from WebSocket server");
+        });
+    </script>
+</body>
+</html>
