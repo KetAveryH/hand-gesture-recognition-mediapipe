@@ -213,7 +213,7 @@ class GestureController():
                 elapsed = current_time - self.hand_press_time["right"]
                 if elapsed < self.hold_threshold:
                     print("Right hand: short pinch => single click.")
-                    self.trigger_click_event()
+                    self.trigger_click_event()                              #
                 self.hand_state["right"] = "idle"
         elif current_state == "pinch-holding":
             if gesture == "pinch":
@@ -290,27 +290,34 @@ class GestureController():
             else:
                 print("Left hand grab ended.")
                 self.hand_state["left"] = "idle"
+    
+    ### Mouse control functions
+    # To Disable simply comment out the following functions and set their returns to "pass".
 
     def scroll_with_displacement(self, current_y):
-        delta = current_y - self.last_scroll_y
-        scroll_amount = int(delta * self.scroll_sensitivity * 5000)
-        if scroll_amount != 0:
-            ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
-        self.last_scroll_y = current_y
+        # delta = current_y - self.last_scroll_y
+        # scroll_amount = int(delta * self.scroll_sensitivity * 5000)
+        # if scroll_amount != 0:
+        #     ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
+        # self.last_scroll_y = current_y
+        pass
 
     def move_cursor(self, x, y):
-        screen_x = int(x * self.screen_width)
-        screen_y = int(y * self.screen_height)
-        screen_x = max(0, min(self.screen_width - 1, screen_x))
-        screen_y = max(0, min(self.screen_height - 1, screen_y))
-        ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
+        # screen_x = int(x * self.screen_width)
+        # screen_y = int(y * self.screen_height)
+        # screen_x = max(0, min(self.screen_width - 1, screen_x))
+        # screen_y = max(0, min(self.screen_height - 1, screen_y))
+        # ctypes.windll.user32.SetCursorPos(screen_x, screen_y)
+        pass
 
     def trigger_click_event(self):
-        self.press_down()
-        self.press_up()
-
+        # self.press_down()
+        # self.press_up()
+        pass
+    
     def press_down(self):
         ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        
 
     def press_up(self):
         ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
@@ -393,7 +400,9 @@ def main():
             gesture_controller.dump_json_data(None)
 
         # Use the Canvas instance to draw all overlays and display the image.
-        canvas_instance.display(debug_image, event, fps, mode, number, drawn_circles, list(point_history))  # COMMENT THIS OUT IF DISPLAY IS NOT NEEDED
+        ########## UNCOMMENT THIS OUT IF DISPLAY IS NEEDED ###########################################
+        # canvas_instance.display(debug_image, event, fps, mode, number, drawn_circles, list(point_history))  # introduced additional latency is introduced when canvas tab is minimized
+                                                                           
     
     cap.release()
     cv.destroyAllWindows()
