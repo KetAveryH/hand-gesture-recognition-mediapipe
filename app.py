@@ -292,7 +292,7 @@ class GestureController():
                 self.hand_state["left"] = "idle"
     
     ### Mouse control functions
-    # To Disable simply comment out the following functions and set their returns to "pass".
+    ################ To Enable OS level controls simply comment out the following functions and commout out "pass". #########
 
     def scroll_with_displacement(self, current_y):
         # delta = current_y - self.last_scroll_y
