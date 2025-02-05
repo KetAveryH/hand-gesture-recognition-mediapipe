@@ -90,6 +90,10 @@ When running, the server will print connection events and emit hand data updates
 
 ---
 
+### Viewing API Outputs
+
+The `socket.html` file loads hand data from the JSON buffer file (`position.json`) and displays their API data along with a red and blue ball on the web-page, intended to represent the tracking of your hands.
+
 ## Directory Structure
 
 ```
